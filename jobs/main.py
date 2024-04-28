@@ -9,6 +9,7 @@ import random
 from datasketch import MinHash, MinHashLSH
 from pybloom_live import BloomFilter
 import time
+import numpy as np
 
 
 
@@ -29,6 +30,40 @@ EMERGENCY_TOPIC = os.getenv( 'EMERGENCY_TOPIC', 'emergency_data')
 start_time = datetime.now()
 start_location = LOS_ANGELES_COORDINATES.copy()
 weather_lsh = MinHashLSH(threshold=0.1, num_perm=128)
+
+
+def apply_differential_privacy(data, sensitivity, epsilon):
+    """Apply Laplace noise to data for differential privacy.
+
+    Args:
+        data (float): The original data point to be privatized.
+        sensitivity (float): The maximum change to the query function from a single alteration of the dataset.
+        epsilon (float): Privacy budget, lower values are more private.
+
+    Returns:
+        float: Privatized data.
+    """
+    scale = sensitivity / epsilon
+    noise = np.random.laplace(0, scale, 1)
+    return data + noise
+
+
+def report_average_speed(speeds, epsilon=1.0):
+    """Calculate differentially private average speed.
+
+    Args:
+        speeds (list of float): List of speed measurements.
+        epsilon (float): Privacy budget, with default set for moderate privacy.
+
+    Returns:
+        float: Differentially private average speed.
+    """
+    average_speed = sum(speeds) / len(speeds)
+    # Sensitivity of average speed is the maximum speed divided by the number of data points (assuming speed is bounded)
+    sensitivity = max(speeds) / len(speeds)
+    private_average = apply_differential_privacy(average_speed, sensitivity, epsilon)
+    return private_average
+
 
 def get_next_time():
     global start_time
@@ -84,7 +119,7 @@ def generate_gps_data(device_id, timestamp, vehicle_type='private'):
         'id': uuid.uuid4(),
         'deviceId': device_id,
         'timestamp': timestamp,
-        'speed': random.uniform(0, 40),
+        'speed': random.uniform(0, 40), 
         'direction': 'North-East',
         'vehicleType': vehicle_type
         }
@@ -105,14 +140,14 @@ def simulate_vehicle_movement():
 #move towards San Francisco
     start_location[ 'latitude'] += LATITUDE_INCREMENT
     start_location['longitude'] += LONGITUDE_INCREMENT
-#add some randomness to pimulate actual road travel
+#add some randomness to pimulate actual road travel 
     start_location[ 'latitude'] += random.uniform(-0.0005,0.0005)
     start_location[ 'longitude'] += random.uniform(-0.0005,0.0005)
 
     return start_location
 
 
-def generate_vehicle_data(device_id):
+def generate_vehicle_data(device_id):   
     location = simulate_vehicle_movement()
     return {
         'id': uuid.uuid4(),
@@ -136,7 +171,7 @@ def delivery_report(err, msg):
 def json_serializer(o):
     if isinstance(o, uuid.UUID):
         return str(o)
-    raise TypeError(f'Object of type{o.__class__.__name__} is not JSON serializable')
+    raise TypeError(f'Object of type{o._class.name_} is not JSON serializable')
 
 
 
@@ -187,9 +222,13 @@ def simulate_journey(producer, device_id):
 
         # Pause between iterations to simulate real-time data streaming
         time.sleep(5)
+    speeds_collected = [30, 35, 40, 25, 30]  # Example speeds collected during a simulation step
+    epsilon_value = 0.5  # Smaller epsilon means more privacy
+    private_average_speed = report_average_speed(speeds_collected, epsilon=epsilon_value)
+    print(f"Reported (Differentially Private) Average Speed: {private_average_speed}")
 
 
-if __name__ == '__main__':
+if _name_ == '_main_':
     producer_config = {
         'bootstrap.servers': KAFKA_BOOTSTRAP_SERVERS,
         'error_cb': lambda err: print(f'Kafka error: {err}')
