@@ -10,6 +10,11 @@ from datasketch import MinHash, MinHashLSH
 from pybloom_live import BloomFilter
 import time
 import numpy as np
+import scikit-learn 
+import matplotlib
+from sklearn.tree import DecisionTreeClassifier, plot_tree
+import matplotlib.pyplot as plt
+
 
 
 
@@ -30,6 +35,25 @@ EMERGENCY_TOPIC = os.getenv( 'EMERGENCY_TOPIC', 'emergency_data')
 start_time = datetime.now()
 start_location = LOS_ANGELES_COORDINATES.copy()
 weather_lsh = MinHashLSH(threshold=0.1, num_perm=128)
+
+
+def train_predictive_model(features, labels):
+    """
+    Trains a decision tree classifier on the provided features and labels.
+    Features could be data like weather conditions, time, etc.
+    Labels could be binary labels indicating high or low traffic.
+    """
+    clf = DecisionTreeClassifier(max_depth=5)
+    clf.fit(features, labels)
+    return clf
+
+def explain_model_decision(clf, feature_names):
+    """
+    Generates a textual and graphical explanation of the decision tree model.
+    """
+    fig, ax = plt.subplots(figsize=(20, 10))
+    plot_tree(clf, filled=True, feature_names=feature_names, ax=ax, fontsize=10)
+    plt.show()
 
 
 def apply_differential_privacy(data, sensitivity, epsilon):
@@ -188,7 +212,8 @@ def produce_data_to_kafka(producer, topic, data):
 def simulate_journey(producer, device_id):
     # Initialize the Bloom filter with desired capacity and error rate
     vehicle_ids_bloom = BloomFilter(capacity=1000, error_rate=0.01)
-
+clf = train_predictive_model(features, labels)
+explain_model_decision(clf, feature_names)
     while True:
         vehicle_data = generate_vehicle_data(device_id)
 
@@ -226,6 +251,7 @@ def simulate_journey(producer, device_id):
     epsilon_value = 0.5  # Smaller epsilon means more privacy
     private_average_speed = report_average_speed(speeds_collected, epsilon=epsilon_value)
     print(f"Reported (Differentially Private) Average Speed: {private_average_speed}")
+  
 
 
 if _name_ == '_main_':
