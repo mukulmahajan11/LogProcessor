@@ -6,12 +6,17 @@ from confluent_kafka import SerializingProducer
 import simplejson 
 from datetime import datetime, timedelta
 import random
+from datasketch import MinHash, MinHashLSH
+from pybloom_live import BloomFilter
+import time
 
-LONDON_COORDINATES = { "latitude": 51.5074, "longitude": -0.1278 }
-BIRMINGHAM_COORDINATES = {"latitude": 52.4862, "longitude": -1.8904}
+
+
+LOS_ANGELES_COORDINATES = { "latitude": 34.0522, "longitude": -118.2437 }
+SAN_FRANCISCO_COORDINATES = {"latitude": 37.7749, "longitude": -122.4194}
 #movement increments
-LATITUDE_INCREMENT = (BIRMINGHAM_COORDINATES['latitude'] - LONDON_COORDINATES ['latitude' ]) / 100
-LONGITUDE_INCREMENT = (BIRMINGHAM_COORDINATES['longitude']- LONDON_COORDINATES ['longitude']) / 100
+LATITUDE_INCREMENT = (SAN_FRANCISCO_COORDINATES['latitude'] - LOS_ANGELES_COORDINATES ['latitude' ]) / 100
+LONGITUDE_INCREMENT = (SAN_FRANCISCO_COORDINATES['longitude']- LOS_ANGELES_COORDINATES ['longitude']) / 100
 
 #Environment Variables for configuration
 KAFKA_BOOTSTRAP_SERVERS = os.getenv( 'KAFKA_BOOTSTRAP_SERVERS', 'Localhost: 9093')
@@ -22,13 +27,30 @@ WEATHER_TOPIC = os.getenv( 'WEATHER_TOPIC', 'weather_data')
 EMERGENCY_TOPIC = os.getenv( 'EMERGENCY_TOPIC', 'emergency_data')
 
 start_time = datetime.now()
-start_location = LONDON_COORDINATES.copy()
+start_location = LOS_ANGELES_COORDINATES.copy()
+weather_lsh = MinHashLSH(threshold=0.1, num_perm=128)
 
 def get_next_time():
     global start_time
     start_time += timedelta(seconds=random.randint(30,60))
 
     return start_time
+
+def create_minhash(data, num_perm=128):
+    m = MinHash(num_perm=num_perm)
+    for key, value in data.items():
+        m.update(f"{key}_{value}".encode('utf-8'))
+    return m
+
+def add_data_to_lsh(data, lsh):
+    minhash = create_minhash(data)
+    data_id = str(uuid.uuid4())
+    lsh.insert(data_id, minhash)
+    similar_items = lsh.query(minhash)
+    if len(similar_items) > 1:
+        print(f"Found similar entries for ID {data_id}: {similar_items}")
+    return data
+
 
 def generate_weather_data(device_id, timestamp, location):
     return {
@@ -62,7 +84,7 @@ def generate_gps_data(device_id, timestamp, vehicle_type='private'):
         'id': uuid.uuid4(),
         'deviceId': device_id,
         'timestamp': timestamp,
-        'speed': random.uniform(0, 40), 
+        'speed': random.uniform(0, 40),
         'direction': 'North-East',
         'vehicleType': vehicle_type
         }
@@ -80,17 +102,17 @@ def generate_traffic_camera_data(device_id, timestamp, location, camera_id):
 
 def simulate_vehicle_movement():
     global start_location
-#move towards birmingham
+#move towards San Francisco
     start_location[ 'latitude'] += LATITUDE_INCREMENT
     start_location['longitude'] += LONGITUDE_INCREMENT
-#add some randomness to pimulate actual road travel 
+#add some randomness to pimulate actual road travel
     start_location[ 'latitude'] += random.uniform(-0.0005,0.0005)
     start_location[ 'longitude'] += random.uniform(-0.0005,0.0005)
 
     return start_location
 
 
-def generate_vehicle_data(device_id):   
+def generate_vehicle_data(device_id):
     location = simulate_vehicle_movement()
     return {
         'id': uuid.uuid4(),
@@ -128,35 +150,44 @@ def produce_data_to_kafka(producer, topic, data):
     producer.flush()
 
 
-
-
 def simulate_journey(producer, device_id):
+    # Initialize the Bloom filter with desired capacity and error rate
+    vehicle_ids_bloom = BloomFilter(capacity=1000, error_rate=0.01)
+
     while True:
         vehicle_data = generate_vehicle_data(device_id)
-        gps_data = generate_gps_data(device_id, vehicle_data['timestamp'])
-        traffic_camera_data=generate_traffic_camera_data(device_id,vehicle_data['timestamp'],vehicle_data['location'],'Niconcamera')
-        weather_data=generate_weather_data(device_id, vehicle_data['timestamp'],vehicle_data['location'])
-        emergency_incident_data=generate_emergency_incident_data(device_id,vehicle_data['timestamp'],vehicle_data['location'])
-        
-        if(vehicle_data['location'][0]>=BIRMINGHAM_COORDINATES['latitude'] 
-           and vehicle_data['location'][1]<=BIRMINGHAM_COORDINATES['longitude']):
-            print(f'Vehicle has reached Birmingham.Simulation has ended')
-            break
-        
-        """print(vehicle_data)
-        print(gps_data)
-        print(traffic_camera_data)
-        print(weather_data)
-        print(emergency_incident_data)"""
-        produce_data_to_kafka(producer,VEHICLE_TOPIC,vehicle_data)
-        produce_data_to_kafka(producer,GPS_TOPIC,gps_data)
-        produce_data_to_kafka(producer,TRAFFIC_TOPIC,traffic_camera_data)
-        produce_data_to_kafka(producer,WEATHER_TOPIC,weather_data)
-        produce_data_to_kafka(producer,EMERGENCY_TOPIC,emergency_incident_data)
 
+        # Check if the vehicle ID has already been seen
+        if vehicle_data['deviceId'] in vehicle_ids_bloom:
+            print(f"Duplicate vehicle data detected: {vehicle_data['deviceId']}")
+        else:
+            # If not seen, add to Bloom filter and process further
+            vehicle_ids_bloom.add(vehicle_data['deviceId'])
+
+            # Generate additional data types
+            gps_data = generate_gps_data(device_id, vehicle_data['timestamp'])
+            traffic_camera_data = generate_traffic_camera_data(device_id, vehicle_data['timestamp'],
+                                                               vehicle_data['location'], 'Niconcamera')
+            weather_data = generate_weather_data(device_id, vehicle_data['timestamp'], vehicle_data['location'])
+            emergency_incident_data = generate_emergency_incident_data(device_id, vehicle_data['timestamp'],
+                                                                       vehicle_data['location'])
+
+            # Produce data to Kafka topics
+            produce_data_to_kafka(producer, VEHICLE_TOPIC, vehicle_data)
+            produce_data_to_kafka(producer, GPS_TOPIC, gps_data)
+            produce_data_to_kafka(producer, TRAFFIC_TOPIC, traffic_camera_data)
+            produce_data_to_kafka(producer, WEATHER_TOPIC, weather_data)
+            produce_data_to_kafka(producer, EMERGENCY_TOPIC, emergency_incident_data)
+
+        # Check if the vehicle has reached its destination
+        if (vehicle_data['location'][0] >= SAN_FRANCISCO_COORDINATES['latitude'] and
+                vehicle_data['location'][1] <= SAN_FRANCISCO_COORDINATES['longitude']):
+            print(f'Vehicle has reached San Francisco. Simulation has ended.')
+            break
+
+        # Pause between iterations to simulate real-time data streaming
         time.sleep(5)
 
-        
 
 if __name__ == '__main__':
     producer_config = {
